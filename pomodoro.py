@@ -68,7 +68,7 @@ try:
     from PySide6.QtGui import (
         QPainter, QPen, QColor, QFont, QFontDatabase,
         QIcon, QPixmap, QPainterPath, QAction, QPalette, QLinearGradient,
-        QMouseEvent, QEnterEvent,
+        QMouseEvent, QEnterEvent, QShortcut, QKeySequence,
     )
 except ImportError:
     print("请先安装 PySide6:  pip install PySide6")
@@ -517,6 +517,10 @@ class TimerPage(QWidget):
         self._update_tabs()
 
     def _switch_mode(self, new_mode: str):
+        """Switch mode — only allowed when timer is not running."""
+        if self.running:
+            self._update_tabs()  # revert tab selection
+            return
         self.stop()
         self.mode = new_mode
         self.remaining = self.durations[self.mode]
@@ -532,12 +536,8 @@ class TimerPage(QWidget):
     def _toggle(self):
         if self.running:
             self.stop()
-            self.btn_play.setChecked(False)
-            self._sync_tray_toggle(False)
         else:
             self.start()
-            self.btn_play.setChecked(True)
-            self._sync_tray_toggle(True)
 
     def _sync_tray_toggle(self, running: bool):
         w = self.window()
@@ -551,7 +551,9 @@ class TimerPage(QWidget):
         self._elapsed.start()
         self._tick_target = self.remaining
         self._tick_timer.start()
+        self.btn_play.setChecked(True)
         self.ring.set_label(self.LABELS[self.mode])
+        self._sync_tray_toggle(True)
 
     def stop(self):
         if not self.running:
@@ -561,19 +563,25 @@ class TimerPage(QWidget):
         elapsed_sec = self._elapsed.elapsed() / 1000.0
         self.remaining = max(0, self._tick_target - int(elapsed_sec))
         self._update_display()
+        self.btn_play.setChecked(False)
+        self._sync_tray_toggle(False)
 
     def reset(self):
         self.stop()
         self.mode = "focus"
         self.remaining = self.durations[self.mode]
         self.completed = 0
+        self.btn_play.setChecked(False)
         self.ring.set_label(self.LABELS[self.mode])
         self._update_display()
         self._update_dots()
         self._update_tabs()
+        self._sync_tray_toggle(False)
 
     def skip(self):
         self.stop()
+        self.btn_play.setChecked(False)
+        self._sync_tray_toggle(False)
         if self.mode == "focus":
             self._switch_mode("shortBreak")
         else:
@@ -630,10 +638,13 @@ class TimerPage(QWidget):
         self.ring.set_progress(progress)
         self.ring.set_ring_color(QColor(self._ring_color()))
         self.window().setWindowTitle(f"{text} – {self.LABELS[self.mode]}")
-        # Update tray tooltip
+        # Update tray tooltip and status
         w = self.window()
         if hasattr(w, 'tray'):
-            w.tray.setToolTip(f"番茄钟 — {self.LABELS[self.mode]} {text}")
+            state = "▶ 运行中" if self.running else "⏸ 已暂停"
+            w.tray.setToolTip(f"番茄钟 — {self.LABELS[self.mode]} {text}  {state}")
+            if hasattr(w, '_tray_status'):
+                w._tray_status.setText(f"⏱ {self.LABELS[self.mode]} — {text}  {state}")
 
     def _update_dots(self):
         for i, dot in enumerate(self.dots):
@@ -1050,6 +1061,11 @@ class PomodoroWindow(QMainWindow):
         hint.setAlignment(Qt.AlignCenter)
         root.addWidget(hint)
 
+        # ── Space shortcut (works regardless of focus) ──
+        sc = QShortcut(QKeySequence(Qt.Key_Space), self)
+        sc.setContext(Qt.ShortcutContext.WindowShortcut)
+        sc.activated.connect(self._on_space)
+
         # Connections
         self.settings_page.theme_changed.connect(self._apply_theme)
         self.settings_page.setting_changed.connect(self.timer_page.reload_settings)
@@ -1097,13 +1113,40 @@ class PomodoroWindow(QMainWindow):
         quit_action.triggered.connect(QApplication.instance().quit)
 
         self.tray.setContextMenu(menu)
+        # Style the tray menu
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid rgba(0,0,0,0.1);
+                border-radius: 8px;
+                padding: 6px;
+                font-size: 14px;
+            }
+            QMenu::item {
+                padding: 6px 24px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #007aff;
+                color: white;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: rgba(0,0,0,0.08);
+                margin: 4px 12px;
+            }
+        """)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
     def _tray_switch_mode(self, mode: str):
-        """Switch timer mode from tray menu."""
+        """Switch timer mode from tray menu (only if timer is stopped)."""
+        if self.timer_page.running:
+            self.tray.showMessage("番茄钟", "计时器运行中，请先暂停再切换模式",
+                                  QSystemTrayIcon.Warning, 2000)
+            return
         self.timer_page._switch_mode(mode)
-        self.stack.setCurrentIndex(0)  # switch to timer page
+        self.stack.setCurrentIndex(0)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -1131,6 +1174,11 @@ class PomodoroWindow(QMainWindow):
         layout.setContentsMargins(24, 28, 24, 28)
         layout.addWidget(widget)
         return card
+
+    def _on_space(self):
+        """Space key handler — only toggle timer when on timer page."""
+        if self.stack.currentIndex() == 0:
+            self.timer_page._toggle()
 
     def _switch_page(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -1428,20 +1476,9 @@ class PomodoroWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Enable Windows acrylic blur behind window for true frosted glass
         if not hasattr(self, '_acrylic_applied'):
             self._acrylic_applied = True
             _enable_acrylic(int(self.winId()), self._is_dark)
-
-    def event(self, event):
-        """Intercept Space key before child widgets consume it."""
-        from PySide6.QtCore import QEvent
-        if event.type() == QEvent.KeyPress:
-            if event.key() == Qt.Key_Space and self.stack.currentIndex() == 0:
-                if not event.isAutoRepeat():
-                    self.timer_page._toggle()
-                return True
-        return super().event(event)
 
 
 # ── Entry Point ────────────────────────────────────────────────────────────
