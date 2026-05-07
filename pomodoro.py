@@ -13,6 +13,7 @@ import struct
 import wave
 import tempfile
 import atexit
+from time import perf_counter as _perf_counter
 from pathlib import Path
 
 # ── System dark-mode detection (no extra deps) ─────────────────────────────
@@ -901,12 +902,6 @@ class PomodoroWindow(QMainWindow):
         self.settings_page.theme_changed.connect(self._apply_theme)
         self.settings_page.setting_changed.connect(self.timer_page.reload_settings)
 
-        # Key shortcuts
-        self._space_shortcut = QAction(self)
-        self._space_shortcut.setShortcut(Qt.Key_Space)
-        self._space_shortcut.triggered.connect(self.timer_page._toggle)
-        self.addAction(self._space_shortcut)
-
         # Apply theme
         self._apply_theme(self._current_theme)
 
@@ -916,13 +911,6 @@ class PomodoroWindow(QMainWindow):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(24, 28, 24, 28)
         layout.addWidget(widget)
-
-        # Drop shadow for frosted glass depth
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(28)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 45))
-        card.setGraphicsEffect(shadow)
         return card
 
     def _switch_page(self, index: int):
@@ -1242,11 +1230,15 @@ class PomodoroWindow(QMainWindow):
             self._acrylic_applied = True
             _enable_acrylic(int(self.winId()), self._is_dark)
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Space and self.stack.currentIndex() == 0:
-            self.timer_page._toggle()
-        else:
-            super().keyPressEvent(event)
+    def event(self, event):
+        """Intercept Space key before child widgets consume it."""
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Space and self.stack.currentIndex() == 0:
+                if not event.isAutoRepeat():
+                    self.timer_page._toggle()
+                return True
+        return super().event(event)
 
 
 # ── Entry Point ────────────────────────────────────────────────────────────
