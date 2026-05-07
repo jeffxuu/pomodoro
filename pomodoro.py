@@ -58,15 +58,17 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QStackedWidget, QSlider, QSpinBox,
         QFrame, QSizePolicy, QButtonGroup, QRadioButton, QStyle,
-        QGraphicsDropShadowEffect, QScrollArea,
+        QGraphicsDropShadowEffect, QScrollArea, QSystemTrayIcon, QMenu,
     )
     from PySide6.QtCore import (
         Qt, QTimer, QPropertyAnimation, QEasingCurve, QSettings,
         QPoint, QPointF, Signal, QRectF, QSize, Property as QtCore_Property,
+        QElapsedTimer,
     )
     from PySide6.QtGui import (
         QPainter, QPen, QColor, QFont, QFontDatabase,
         QIcon, QPixmap, QPainterPath, QAction, QPalette, QLinearGradient,
+        QMouseEvent, QEnterEvent,
     )
 except ImportError:
     print("请先安装 PySide6:  pip install PySide6")
@@ -394,9 +396,9 @@ class TimerPage(QWidget):
         self.remaining = self.durations[self.mode]
         self.running = False
         self._tick_timer = QTimer(self)
-        self._tick_timer.setInterval(50)  # 20 fps for smooth ring
+        self._tick_timer.setInterval(100)  # 10 fps, enough for smooth ring
         self._tick_timer.timeout.connect(self._tick)
-        self._tick_start = 0.0
+        self._elapsed = QElapsedTimer()
         self._tick_target = self.remaining
         self.completed = 0  # completed focus sessions (0-3)
 
@@ -478,21 +480,18 @@ class TimerPage(QWidget):
         ctrl = QWidget()
         ctrl_layout = QHBoxLayout(ctrl)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
-        ctrl_layout.setSpacing(20)
+        ctrl_layout.setSpacing(18)
 
-        self.btn_reset = QPushButton("↺")
-        self.btn_reset.setObjectName("ctrlBtn")
+        self.btn_reset = IconButton("reset")
         self.btn_reset.setToolTip("重置")
         self.btn_reset.clicked.connect(self.reset)
         ctrl_layout.addWidget(self.btn_reset)
 
-        self.btn_play = QPushButton("▶")
-        self.btn_play.setObjectName("playBtn")
+        self.btn_play = PlayPauseButton()
         self.btn_play.clicked.connect(self._toggle)
         ctrl_layout.addWidget(self.btn_play)
 
-        self.btn_skip = QPushButton("⏭")
-        self.btn_skip.setObjectName("ctrlBtn")
+        self.btn_skip = IconButton("skip")
         self.btn_skip.setToolTip("跳过")
         self.btn_skip.clicked.connect(self.skip)
         ctrl_layout.addWidget(self.btn_skip)
@@ -533,17 +532,25 @@ class TimerPage(QWidget):
     def _toggle(self):
         if self.running:
             self.stop()
+            self.btn_play.setChecked(False)
+            self._sync_tray_toggle(False)
         else:
             self.start()
+            self.btn_play.setChecked(True)
+            self._sync_tray_toggle(True)
+
+    def _sync_tray_toggle(self, running: bool):
+        w = self.window()
+        if hasattr(w, '_tray_toggle_action'):
+            w._tray_toggle_action.setText("⏸ 暂停" if running else "▶ 开始")
 
     def start(self):
         if self.running:
             return
         self.running = True
-        self._tick_start = self._current_time_ms()
+        self._elapsed.start()
         self._tick_target = self.remaining
         self._tick_timer.start()
-        self.btn_play.setText("⏸")
         self.ring.set_label(self.LABELS[self.mode])
 
     def stop(self):
@@ -551,10 +558,9 @@ class TimerPage(QWidget):
             return
         self.running = False
         self._tick_timer.stop()
-        elapsed = (self._current_time_ms() - self._tick_start) / 1000
-        self.remaining = max(0, round(self._tick_target - elapsed))
+        elapsed_sec = self._elapsed.elapsed() / 1000.0
+        self.remaining = max(0, self._tick_target - int(elapsed_sec))
         self._update_display()
-        self.btn_play.setText("▶")
 
     def reset(self):
         self.stop()
@@ -578,9 +584,8 @@ class TimerPage(QWidget):
     def _tick(self):
         if not self.running:
             return
-        elapsed = (self._current_time_ms() - self._tick_start) / 1000
-        remaining_float = max(0.0, self._tick_target - elapsed)
-        new_remaining = math.ceil(remaining_float)
+        elapsed_sec = self._elapsed.elapsed() / 1000.0
+        new_remaining = max(0, self._tick_target - int(elapsed_sec))
 
         if new_remaining != self.remaining:
             self.remaining = new_remaining
@@ -604,6 +609,13 @@ class TimerPage(QWidget):
         else:
             self._switch_mode("focus")
 
+        # Tray notification
+        w = self.window()
+        if hasattr(w, 'tray'):
+            next_mode_label = self.LABELS[self.mode]
+            w.tray.showMessage("番茄钟", f"时间到！切换到 → {next_mode_label}",
+                               QSystemTrayIcon.Information, 3000)
+
         # Auto-start next
         auto = self.settings.value("auto_start", "true")
         if auto != "false":
@@ -617,8 +629,11 @@ class TimerPage(QWidget):
         progress = 1.0 - (self.remaining / self.durations[self.mode]) if self.durations[self.mode] > 0 else 0.0
         self.ring.set_progress(progress)
         self.ring.set_ring_color(QColor(self._ring_color()))
-        color_label = "🔴专注" if self.mode == "focus" else ("🟢休息" if self.mode == "shortBreak" else "🟠长休息")
         self.window().setWindowTitle(f"{text} – {self.LABELS[self.mode]}")
+        # Update tray tooltip
+        w = self.window()
+        if hasattr(w, 'tray'):
+            w.tray.setToolTip(f"番茄钟 — {self.LABELS[self.mode]} {text}")
 
     def _update_dots(self):
         for i, dot in enumerate(self.dots):
@@ -630,9 +645,146 @@ class TimerPage(QWidget):
             dot.style().unpolish(dot)
             dot.style().polish(dot)
 
-    @staticmethod
-    def _current_time_ms():
-        return _perf_counter()
+
+# ── Custom Painted Buttons ──────────────────────────────────────────────────
+class PlayPauseButton(QPushButton):
+    """Large circular play/pause button with custom-painted icon."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setObjectName("playBtn")
+        self.setFixedSize(68, 68)
+        self._hover = False
+
+    def enterEvent(self, event: QEnterEvent):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r = min(w, h) / 2
+
+        # Background
+        is_dark = _is_widget_dark(self)
+        if self.isChecked():
+            bg = QColor("#0a84ff") if is_dark else QColor("#007aff")
+        else:
+            bg = QColor("#0a84ff") if is_dark else QColor("#007aff")
+        if self._hover:
+            bg = bg.lighter(108)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawEllipse(QPointF(w / 2, h / 2), r - 1, r - 1)
+
+        # Icon
+        p.setBrush(QColor(255, 255, 255))
+        if self.isChecked():
+            # Pause: two vertical bars
+            bar_w = r * 0.35
+            bar_h = r * 0.7
+            bar_gap = r * 0.36
+            p.drawRoundedRect(QRectF(w / 2 - bar_gap - bar_w, h / 2 - bar_h / 2, bar_w, bar_h), 2, 2)
+            p.drawRoundedRect(QRectF(w / 2 + bar_gap, h / 2 - bar_h / 2, bar_w, bar_h), 2, 2)
+        else:
+            # Play: triangle
+            tri = QPainterPath()
+            cx, cy = w / 2, h / 2
+            s = r * 0.5
+            tri.moveTo(cx - s * 0.7, cy - s)
+            tri.lineTo(cx - s * 0.7, cy + s)
+            tri.lineTo(cx + s, cy)
+            tri.closeSubpath()
+            p.drawPath(tri)
+        p.end()
+
+
+class IconButton(QPushButton):
+    """Small circular icon button (reset / skip) with custom-painted icon."""
+    _ICONS = {
+        "reset": lambda p, cx, cy, s: _paint_reset(p, cx, cy, s),
+        "skip":  lambda p, cx, cy, s: _paint_skip(p, cx, cy, s),
+    }
+
+    def __init__(self, icon_type: str, parent=None):
+        super().__init__(parent)
+        self._icon_type = icon_type
+        self.setObjectName("ctrlBtn")
+        self.setFixedSize(46, 46)
+        self._hover = False
+
+    def enterEvent(self, event: QEnterEvent):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        r = min(w, h) / 2
+
+        is_dark = _is_widget_dark(self)
+        c = QColor("#3a3a3c") if is_dark else QColor("#e5e5ea")
+        if self._hover:
+            c = c.lighter(115) if is_dark else c.darker(108)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        p.drawEllipse(QPointF(cx, cy), r - 1, r - 1)
+
+        # Icon stroke
+        pen_color = QColor("#f5f5f7") if is_dark else QColor("#1d1d1f")
+        p.setPen(QPen(pen_color, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        self._ICONS.get(self._icon_type, lambda *a: None)(p, cx, cy, r * 0.42)
+        p.end()
+
+
+def _paint_reset(p, cx, cy, s):
+    """Circular arrow icon."""
+    path = QPainterPath()
+    path.arcMoveTo(cx - s, cy - s, s * 2, s * 2, 45)
+    path.arcTo(cx - s, cy - s, s * 2, s * 2, 45, 270)
+    p.drawPath(path)
+    # Arrowhead
+    ax, ay = cx + s * 0.65, cy - s * 0.85
+    arrow = QPainterPath()
+    arrow.moveTo(ax - s * 0.35, ay + s * 0.5)
+    arrow.lineTo(ax, ay)
+    arrow.lineTo(ax + s * 0.35, ay + s * 0.4)
+    p.drawPath(arrow)
+
+
+def _paint_skip(p, cx, cy, s):
+    """Skip-forward icon (two triangles + bar)."""
+    # Left triangle
+    t1 = QPainterPath()
+    t1.moveTo(cx - s * 0.7, cy - s * 0.7)
+    t1.lineTo(cx - s * 0.7, cy + s * 0.7)
+    t1.lineTo(cx - s * 0.05, cy)
+    t1.closeSubpath()
+    p.drawPath(t1)
+    # Right triangle
+    t2 = QPainterPath()
+    t2.moveTo(cx + s * 0.1, cy - s * 0.7)
+    t2.lineTo(cx + s * 0.1, cy + s * 0.7)
+    t2.lineTo(cx + s * 0.75, cy)
+    t2.closeSubpath()
+    p.drawPath(t2)
+    # Vertical bar
+    p.drawLine(QPointF(cx + s * 0.88, cy - s * 0.7), QPointF(cx + s * 0.88, cy + s * 0.7))
 
 
 # ── iOS-style Toggle Switch ─────────────────────────────────────────────────
@@ -905,6 +1057,73 @@ class PomodoroWindow(QMainWindow):
         # Apply theme
         self._apply_theme(self._current_theme)
 
+        # ── System tray ──
+        self._setup_tray()
+
+    def _setup_tray(self):
+        """Create system tray icon with right-click menu."""
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setIcon(QIcon(_create_tomato_pixmap(64)))
+        self.tray.setToolTip("番茄钟 — 已就绪")
+
+        menu = QMenu()
+
+        # Timer status display (updates)
+        self._tray_status = menu.addAction("⏱ 准备开始")
+        self._tray_status.setEnabled(False)
+        menu.addSeparator()
+
+        # Mode switch submenu
+        mode_menu = menu.addMenu("切换模式")
+        for key, label in [("focus", "专注 25 分钟"), ("shortBreak", "短休息 5 分钟"), ("longBreak", "长休息 15 分钟")]:
+            action = mode_menu.addAction(label)
+            action.triggered.connect(lambda checked, k=key: self._tray_switch_mode(k))
+
+        menu.addSeparator()
+
+        # Start/Pause
+        toggle_action = menu.addAction("▶ 开始")
+        toggle_action.triggered.connect(self.timer_page._toggle)
+        self._tray_toggle_action = toggle_action
+
+        # Show window
+        show_action = menu.addAction("显示窗口")
+        show_action.triggered.connect(self._tray_show_window)
+
+        menu.addSeparator()
+
+        # Quit
+        quit_action = menu.addAction("退出")
+        quit_action.triggered.connect(QApplication.instance().quit)
+
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
+
+    def _tray_switch_mode(self, mode: str):
+        """Switch timer mode from tray menu."""
+        self.timer_page._switch_mode(mode)
+        self.stack.setCurrentIndex(0)  # switch to timer page
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_show_window(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        """Double-click tray icon to show window."""
+        if reason == QSystemTrayIcon.DoubleClick:
+            self._tray_show_window()
+
+    def closeEvent(self, event):
+        """Minimize to tray instead of closing."""
+        event.ignore()
+        self.hide()
+        self.tray.showMessage("番茄钟", "已最小化到系统托盘，右键图标可操作", QSystemTrayIcon.Information, 2000)
+
     def _wrap_card(self, widget: QWidget) -> QWidget:
         card = QFrame()
         card.setObjectName("card")
@@ -1008,38 +1227,22 @@ class PomodoroWindow(QMainWindow):
             color: {palette["text"]};
         }}
 
-        /* ── Control Buttons ── */
+        /* ── Control Buttons (custom-painted) ── */
         QPushButton#ctrlBtn {{
-            background-color: {palette["btn_bg"]};
+            background: transparent;
             border: none;
-            border-radius: 22px;
-            min-width: 44px;
-            max-width: 44px;
-            min-height: 44px;
-            max-height: 44px;
-            color: {palette["text"]};
-            font-size: 20px;
+            min-width: 46px;
+            max-width: 46px;
+            min-height: 46px;
+            max-height: 46px;
         }}
-        QPushButton#ctrlBtn:hover {{
-            background-color: {palette["btn_hover"]};
-        }}
-        QPushButton#ctrlBtn:pressed {{
-            background-color: {palette["btn_hover"]};
-        }}
-
         QPushButton#playBtn {{
-            background-color: {palette["blue"]};
+            background: transparent;
             border: none;
-            border-radius: 32px;
-            min-width: 64px;
-            max-width: 64px;
-            min-height: 64px;
-            max-height: 64px;
-            color: white;
-            font-size: 26px;
-        }}
-        QPushButton#playBtn:hover {{
-            background-color: {palette["blue"]};
+            min-width: 68px;
+            max-width: 68px;
+            min-height: 68px;
+            max-height: 68px;
         }}
 
         /* ── Session Dots ── */
