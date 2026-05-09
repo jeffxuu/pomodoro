@@ -1,0 +1,53 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "pomodoro.py"
+      - "requirements.txt"
+      - "build.bat"
+      - ".github/workflows/windows-build.yml"
+
+jobs:
+  build-windows:
+    name: Build Pomodoro.exe
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          $iconArgs = @()
+          if (Test-Path "pomodoro.ico") {
+            $iconArgs = @("--icon=pomodoro.ico")
+          }
+
+          python -m PyInstaller --onefile --windowed --name Pomodoro @iconArgs --noconfirm pomodoro.py
+
+          if (!(Test-Path "dist\Pomodoro.exe")) {
+            throw "Build finished but dist\Pomodoro.exe was not created."
+          }
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pomodoro-windows-exe
+          path: dist/Pomodoro.exe
+          if-no-files-found: error
