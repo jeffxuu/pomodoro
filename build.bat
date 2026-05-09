@@ -6,22 +6,31 @@ echo ========================================
 echo.
 
 :: Check Python
-python --version >nul 2>&1
+set "PYTHON=python"
+%PYTHON% --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未找到 Python，请先安装 Python 3.10+
+    set "PYTHON=py -3.12"
+    %PYTHON% --version >nul 2>&1
+)
+if errorlevel 1 (
+    set "PYTHON="%LOCALAPPDATA%\Programs\Python\Launcher\py.exe" -3.12"
+    %PYTHON% --version >nul 2>&1
+)
+if errorlevel 1 (
+    echo [错误] 未找到 Python，请先安装 Python 3.10+，或把 Python 加入 PATH
     pause
     exit /b 1
 )
 
 :: Install dependencies
 echo [1/3] 安装依赖...
-python -m pip install -U pip
+%PYTHON% -m pip install -U pip
 if errorlevel 1 (
     echo [错误] pip 更新失败
     pause
     exit /b 1
 )
-python -m pip install -r requirements.txt
+%PYTHON% -m pip install -r requirements.txt
 if errorlevel 1 (
     echo [错误] 依赖安装失败
     pause
@@ -31,10 +40,10 @@ if errorlevel 1 (
 :: Build
 echo [2/3] 打包中（约 1-2 分钟）...
 if exist pomodoro.ico (
-    python -m PyInstaller --onefile --windowed --name Pomodoro --icon=pomodoro.ico --noconfirm pomodoro.py
+    %PYTHON% -m PyInstaller --onefile --windowed --name Pomodoro --icon=pomodoro.ico --noconfirm pomodoro.py
 ) else (
     echo [提示] 未找到 pomodoro.ico，将使用默认 EXE 图标。
-    python -m PyInstaller --onefile --windowed --name Pomodoro --noconfirm pomodoro.py
+    %PYTHON% -m PyInstaller --onefile --windowed --name Pomodoro --noconfirm pomodoro.py
 )
 if errorlevel 1 (
     echo [错误] 打包失败

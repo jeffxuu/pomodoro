@@ -4,3 +4,7 @@ dist/
 error*.log
 __pycache__/
 *.pyc
+.venv/
+.python/
+python-*.exe
+python-install.log
