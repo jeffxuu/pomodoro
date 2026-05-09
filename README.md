@@ -1,38 +1,31 @@
 # 🍅 番茄钟 Pomodoro
 
-Apple 风格设计的番茄钟桌面应用，基于 PySide6 构建。
+一个参考 [Catime](https://github.com/vladelaina/Catime) 交互思路重构的轻量番茄钟：窗口保持小而透明，悬浮在桌面角落即可随时查看，不再需要完整控制台式主界面。
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PySide6](https://img.shields.io/badge/PySide6-6.5%2B-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-lightgrey)
 
-## 截图
-
-<!-- TODO: 添加截图 -->
-
 ## 功能
 
-- **三种模式** — 专注 (25min) / 短休息 (5min) / 长休息 (15min)，4 轮专注后自动切长休息
-- **圆形进度环** — SVG 级抗锯齿，颜色随模式切换（蓝/绿/橙）
-- **Windows 毛玻璃** — 调用 DWM Acrylic API，原生模糊效果
-- **深色/浅色/跟随系统** — 三种主题，通过注册表自动检测 Windows 深色模式
-- **自定义时长** — 设置页可调整三种时长（1-120 分钟）、提醒音量、自动开始
-- **铃声提醒** — 三音和弦提示，无外部音频文件依赖
-- **iOS 风格 Toggle** — 自定义 QPainter 绘制的滑动开关
-- **番茄图标** — 程序化生成的矢量图标，窗口标题栏 + 任务栏 + EXE 文件全覆盖
-- **单文件 EXE** — PyInstaller 打包，拷贝到任意 Windows 电脑直接运行
+- **Catime 风格轻量浮窗** — 无边框、半透明、可拖拽、默认置顶，适合放在屏幕角落常驻。
+- **三阶段番茄循环** — 专注 / 短休息 / 长休息，完成 4 个专注段后自动进入长休息。
+- **精简状态机** — 计时逻辑与 UI 分离，使用 `QElapsedTimer` 修正普通 `QTimer` 的漂移。
+- **托盘常驻** — 支持隐藏窗口后继续计时，可从托盘开始/暂停、重置、打开设置或退出。
+- **快捷键控制** — 空格开始/暂停，`R` 重置，`S` 跳过，`Ctrl+,` 打开设置，`Esc` 隐藏。
+- **可配置设置** — 调整三段时长、自动开始下一段、始终置顶、鼠标穿透专注模式。
+- **程序化番茄图标** — 使用 `QPainter` 生成图标，保持打包时无需额外图片资源。
+- **铃声提醒** — Windows 下使用临时生成的三音和弦 WAV，无外部音频文件依赖。
 
 ## 快捷键
 
 | 按键 | 功能 |
 |------|------|
 | 空格 | 开始 / 暂停 |
-| 重置 | 回到初始状态 |
-| 跳过 | 跳过当前阶段 |
-
-## 下载
-
-前往 [Releases](https://github.com/jeffxuu/pomodoro/releases) 下载最新版 `Pomodoro.exe`。
+| R | 重置当前阶段 |
+| S | 跳过当前阶段 |
+| Ctrl+, | 打开设置 |
+| Esc | 隐藏到托盘 |
 
 ## 从源码运行
 
@@ -58,24 +51,21 @@ pyinstaller --onefile --windowed --name Pomodoro --icon=pomodoro.ico pomodoro.py
 
 ```
 pomodoro/
-├── pomodoro.py          # 主程序
-├── pomodoro.ico         # 番茄图标（运行后自动生成）
+├── pomodoro.py          # PySide6 桌面主程序
+├── pomodoro.ico         # 番茄图标（缺失时运行后自动生成）
 ├── requirements.txt     # Python 依赖
 ├── build.bat            # 一键打包脚本
 ├── index.html           # 网页版（备选）
-├── dist/
-│   └── Pomodoro.exe     # 打包好的可执行文件
 └── README.md
 ```
 
 ## 技术栈
 
-- **PySide6** — Qt for Python，GUI 框架
-- **QSS** — Qt 样式表，实现 Apple 风格主题
-- **QPainter** — 自定义绘制环形进度、Toggle 开关、番茄图标
-- **Windows DWM** — `SetWindowCompositionAttribute` 启用 Acrylic 模糊
-- **Web Audio API** — 网页版使用，无文件合成提示音
-- **PyInstaller** — 单文件 EXE 打包
+- **PySide6** — Qt for Python，GUI 框架。
+- **QPainter** — 自定义绘制番茄图标、半透明面板和进度环。
+- **QSettings** — 持久化时长、自动开始、置顶与鼠标穿透配置。
+- **QSystemTrayIcon** — 托盘常驻与阶段结束通知。
+- **PyInstaller** — 单文件 EXE 打包。
 
 ## License
 
